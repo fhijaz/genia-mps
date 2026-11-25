@@ -747,3 +747,376 @@ commit decision; nothing pushed):
 - fhijaz/genia-mps repo content: genia_run.sh SAM3D_ATTN_IMPL
   default (backup genia_run.sh.orig-backup-flashdefault) and this
   log. genia_env site-packages is machine state, not repo content.
+
+## End-to-end validation (Nov 25, 2026)
+Approved by Farrukh in chat ("Run the end-to-end validation with the
+tolerance standard"). Fresh from-scratch craftsman run via the
+production launcher (genia_run.sh image --scene craftsman; run_demo
+starts from scratch: no cache resume, no cache save), production
+configuration exactly as adopted - launcher defaults apply
+(SAM3D_ATTN_IMPL=flash, AGX_RELAX_CDM_CTXSTORE_TIMEOUT=1, MPS mesh
+decode integrated, mtlattn 0.5.0 in genia_env). No code changes.
+BASELINES (run 20261124_022133, pre-flash, CPU mesh decode): masked
+PSNR 23.4736 / SSIM 0.8315 / LPIPS 0.0834 (full precision
+23.473628997802734 / 0.8314967751502991 / 0.08344723284244537);
+wall ~4.5 h; finetune ~95 s/it; CPU mesh decode 1,180.6 s, mesh
+776,998 verts / 1,552,844 faces.
+TOLERANCE STANDARD (user-approved): PASS requires run completes end
+to end with final mesh + evaluator metrics; masked metrics within
+PSNR 0.5 dB / SSIM 0.02 / LPIPS 0.02 of baselines; finetune pace in
+the flash class (~20-35 s/it); mesh decode on the MPS path (minutes
+class). On PASS the run metrics become the new standing baselines.
+Projection: wall ~2.3 h, finetune ~26 s/it, MPS decode ~164 s, mesh
+776,920 / 1,552,684.
+LAUNCH: pending.
+LAUNCHED Nov 25, 2026 08:53:19 PST (first attempt 08:52:42 died
+instantly: setsid does not exist on macOS - launch mechanics only,
+no pipeline code involved; relaunched with plain nohup + disown).
+Command: /usr/bin/time -l ~/alt3d/genia_run.sh image --scene
+craftsman, log /tmp/genia_validation_craftsman.log, run_demo PID
+66661. Caller env verified clean (SAM3D_ATTN_IMPL / AGX /
+GENIA_MESH_DECODE_DEVICE all unset -> launcher defaults apply:
+SAM3D_ATTN_IMPL=flash, AGX_RELAX_CDM_CTXSTORE_TIMEOUT=1, mesh
+decode default mps). Composed config confirms from-scratch:
+processing.resume_from_cache=false, output.save_cache=false,
+seed 42 (same as baseline run).
+PROGRESS: blocks 00-02 done by ~09:03; global_pose_refine_1 done
+~09:42 (silent inner loop - liveness confirmed by worker CPU-time
+advance, GPU-bound); appearance_init_2 done ~09:48. FINETUNE PACE
+CHECK PASSED: at 09:57 finetune is at it 25/100 running
+21.9-22.0 s/it (flash class 20-35 s/it; baseline was ~95 s/it) -
+the launcher flash default is effective in the real pipeline.
+Loss 0.297 at it 25, descending normally.
+PROGRESS: finetune completed ~10:24 (100 it, ~22 s/it avg, final
+loss ~0.24). global_pose_refine_2 running: Composite opt 500 it
+at ~5.6 s/it (matches the 5.44 s/it profile), ETA ~46 min for the
+block, then run_final.
+RESULT: FAIL (tolerance standard). Run dir
+results/mono_static/image/craftsman/20261125_085320. The run
+completed end to end in ONE uninterrupted process ("Pipeline
+complete!", DEMO exit clean under /usr/bin/time -l): wall
+7,127.23 s = 1.98 h (baseline ~4.5 h); total core 6,680.34 s;
+peak RSS 10.56 GiB (baseline ~10.7 GB); peak MPS alloc
+6,039.6 MB.
+BLOCKS (timing.json total_seconds; baseline craftsman per-block
+was not preserved except finetune - its timing.json was
+overwritten by the finisher pass):
+  gt_shapes_inversion 0.0 (status ran)
+  shape_init 77.7 | appearance_init 191.0 | pose_init 16.6
+  global_pose_refine_1 2,349.0 | appearance_init_2 579.7
+  finetune 2,222.0 (22.2 s/it; baseline 9,435 s bar total,
+  ~94-95 s/it) | global_pose_refine_2 1,245.1
+CRITERIA:
+- Completion + final mesh + metrics: MET.
+- Finetune pace: MET (22.2 s/it, flash class).
+- MPS mesh decode: MET. run_final (decode + exports +
+  evaluation) fits inside wall-minus-core = 447 s total
+  including startup/preprocessing; the baseline CPU decode
+  alone took 1,180.6 s, so the MPS path is confirmed by
+  arithmetic and by the default config. Mesh from THIS runs
+  SLAT (43,778 tokens, same count as baseline): 804,444 verts /
+  1,607,372 faces (001.glb and world.glb) - counts differ from
+  both references because the final SLAT state differs.
+- METRICS: FAILED on all three. Masked (obj_1): PSNR 21.7348
+  vs 23.4736 (delta -1.739 dB, tol 0.5); SSIM 0.7590 vs 0.8315
+  (delta -0.0725, tol 0.02); LPIPS 0.1158 vs 0.0834 (delta
+  +0.0323, tol 0.02). Full-frame: 20.9970 / 0.7495 / 0.1223
+  (baseline 23.1410 / 0.8262 / 0.0865).
+DIAGNOSIS: the finetune trajectory under flash attention lands
+in a materially worse optimum. Final finetune loss 0.2354 vs
+baseline 0.1729; the gap is present by it49 (0.2752 vs 0.2417)
+and widens (it87: 0.2374 vs 0.1797); gradient norms differ
+systematically (tokens 1.9e-02 vs 8.3e-03, lora 2.9e-01 vs
+1.3e-01 at it99) - a different basin, not noise around the
+baseline path. The 4-iteration segment A/B showed a small fixed
+offset at it1 and judged it non-divergent over 4 iterations
+(marginal pass, ~1.4x the noise envelope); over 100 iterations
+that offset compounds. vmask also differs slightly pre-finetune
+(0.82 vs 0.81), consistent with flash being active in the
+backbone SLAT decodes during appearance stages too. The MPS
+mesh decode is exonerated: metrics are computed from Gaussian
+renders, independent of the mesh artifact. Pose-refine blocks
+do not use the gated attention. All other configuration was
+identical (seed 42, from-scratch, same launcher env).
+CONSEQUENCE: baselines DO NOT change - the original craftsman
+baselines (23.4736 / 0.8315 / 0.0834) stand. The production
+flash default is NOT validated end to end; this is recorded as
+a failed validation, not tuned or re-run.
+
+## Gradient-bias diagnostic (Nov 25, 2026)
+Approved by Farrukh in chat ("Go ahead: run the diagnostic code on my
+Mac") after the first attempt stopped at a platform execution-risk
+flag on the ~/alt3d/speed/ harness. QUESTION: does the mtlattn varlen
+flash kernel introduce a SYSTEMATIC gradient bias (segment-boundary
+leakage / per-segment LSE handling in backward), or is its error
+unbiased noise comparable to the baseline path own error vs ground
+truth (trajectory chaos -> dead end for finetune)? Supersedes the
+Step-2 micro-benchmark (synthetic randn seed 777, max-diff only).
+METHOD: real q/k/v captured from a craftsman finetune decode (spy on
+masked_sdpa, baseline path, appearance_init_2 cache protocol);
+float64 CPU dense per-window attention as ground truth (exact
+softmax, scale 1/sqrt(64), forward + backward, fixed seeded upstream
+gradient identical across arms); arms (a) mtlattn varlen fp16,
+(b) mtlattn varlen fp32 inputs, (c) masked_chunked_sdpa baseline,
+(d) MPS SDPA fp32 sanity. Stats per arm for out/dQ/dK/dV: max abs,
+mean abs, SIGNED mean, err-vs-truth slope/corr; per-window breakdown
+(error vs window length; first/middle/last segments; boundary rows);
+repeat with a second upstream-gradient seed (sign/structure
+consistency); neighbor-perturbation + window-permutation leakage
+tests; uniform-length synthetic control (128 / 256).
+STATUS: running. Results appended below as they land.
+STATUS: COMPLETE (Nov 25, 2026). Scripts: grad_bias_capture.py,
+grad_bias_diag.py, grad_bias_analyze.py; raw results
+grad_bias_results.json; capture grad_bias_capture.log; run log
+grad_bias_diag.log - all in ~/alt3d/speed/.
+
+BATCH PROVENANCE: REAL captured q/k/v (preferred route succeeded).
+Spy on masked_sdpa (baseline path, SAM3D_ATTN_IMPL unset) during a
+1-iteration craftsman finetune segment (appearance_init_2 cache,
+seed 12345, ckpt=true); first main-decode call per shift saved to
+diag_qkv.pt in 82 s. Shapes [43778, 12, 64] fp16 per tensor.
+Activation scales (std): shift0 q 1.6208 / k 2.5936 / v 1.0736;
+shift4 q 1.6001 / k 8.7263 / v 0.6754 - far from the randn(0,1) of
+the old micro-benchmark, esp. shift-4 keys; this matters below.
+TRUTH: float64 CPU dense per-window attention via autograd (exact
+softmax, scale 1/sqrt(64)), inputs = exact fp16 values in float64,
+upstream gradient = exact fp16 gout values in float64; two gout
+seeds (A 20251125, B 20251126) per batch. Sanity arm (per-window
+MPS SDPA fp32) sits ~100x below baseline error (dq mean-abs
+4.7e-08 vs 4.9e-06, shift0), confirming the yardstick.
+
+GLOBAL ERRORS vs float64 truth (mean-abs; signed mean; seed A):
+shift0 (279 win):        out            dq             dk             dv
+  mtl_fp16   ma 6.34e-05  1.52e-04      2.21e-05       2.31e-05
+             sm -3.1e-08  -1.9e-07      -1.4e-07       -6.5e-09
+  mtl_fp32   ma 6.25e-05  4.90e-06      4.00e-06       1.45e-05
+  baseline   ma 6.25e-05  4.88e-06      4.00e-06       1.45e-05
+shift4 (318 win):
+  mtl_fp16   ma 6.26e-05  5.85e-04      4.82e-05       6.73e-05
+             sm +1.3e-08  +8.0e-08      -2.3e-08       +1.7e-08
+  mtl_fp32   ma 6.06e-05  9.11e-06      1.26e-05       4.44e-05
+  baseline   ma 6.06e-05  8.52e-06      1.26e-05       4.44e-05
+mean|truth| dq: 2.77e-02 (shift0), 4.83e-02 (shift4).
+RATIOS mtl_fp16 / baseline (mean-abs, seed A): out x1.01 / x1.03,
+dq x31.2 / x68.7, dk x5.5 / x3.8, dv x1.6 / x1.5 (shift0 / shift4).
+mtl_fp32 / baseline: x1.00-x1.07 on EVERY tensor, both shifts, both
+seeds - frequently digit-identical max errors (the shared fp16
+in/out rounding floor). Uniform controls (128/256, randn and
+scale-matched): mtl_fp16 dq ratio only x2.0-x2.9 - the blowup is a
+real-activation effect (large keys), not a uniform-window effect.
+
+BIAS TESTS - all negative for mtl_fp16:
+- Signed means flip sign across gout seeds (dq shift0 -1.9e-07 ->
+  -1.9e-08; dk -1.4e-07 -> +2.3e-08; shift4 dq +8.0e-08 ->
+  -9.3e-09). Relative signed bias ~1e-5 of mean|truth|.
+- Err-vs-truth slope (multiplicative bias): |slope| <= ~1e-5,
+  signs inconsistent across seeds/tensors.
+- Cross-seed per-window dq signed-error correlation: -0.13
+  (shift0), +0.20 (shift4) - no persistent per-window structure
+  (baseline +0.04 / -0.02, same class).
+- No localization: dq mean-abs flat across window-length groups
+  (shift0: 1.52e-04 / 1.52e-04 / 1.54e-04 for len >=256 / mid /
+  <64; corr vs len +0.05) and across boundary rows (first row
+  1.51e-04, last row 1.52e-04, interior 1.52e-04). Group signed
+  means all ~1e-7 with mixed signs, both shifts.
+
+LEAKAGE TESTS (shift0, mtl_fp16) - BIT-EXACT ZERO:
+- Determinism: identical re-run diff 0.0 on out/dq/dk/dv.
+- Window-order permutation (fwd+bwd, unpermuted): diff 0.0.
+- Neighbor perturbation: other windows k/v x100, gout zeroed
+  outside target windows {0, 139, 278}: target out/dq/dk/dv diff
+  0.0 (baseline control also 0.0). Cross-segment contamination
+  and LSE cross-talk are structurally excluded.
+
+VERDICT: NO systematic gradient bias - the bug class is excluded.
+The flash kernel errors are UNBIASED (signed stats ~1e-7 abs /
+~1e-5 relative, sign-unstable across gradient seeds, no per-window,
+length, position, or boundary structure) and segment-isolated
+(bit-exact). What the fp16 arm does have is a materially larger
+error MAGNITUDE than the baseline fp32 chunked math on real
+activations: dq mean-abs x31 (shift0) / x69 (shift4), dk x4-6,
+dv x1.5, out x1.0 - the ratio ordering dq >> dk > dv tracks the
+operand magnitudes in each backward path (dq multiplies by the
+large keys, std 2.6 / 8.7), the signature of fp16 accumulation
+inside the kernel backward, not of segmentation or softmax/LSE
+mishandling. The fp32 arm of the same kernel is baseline-exact
+(x1.00-1.07 everywhere), proving the kernel algorithm itself is
+correct; the excess is purely the fp16 precision class. So the
+end-to-end finetune divergence (loss 0.2354 vs 0.1729) is
+noise-driven trajectory divergence: per-step dQ noise ~0.5-1.2%
+of signal (vs baseline ~0.02%), amplified over 100 iterations of
+a finetune already shown to amplify even baseline-class pointwise
+differences. Classification: unbiased noise / trajectory chaos,
+with the precision caveat - a dead end for the fp16 arm as a
+drop-in replacement at production precision, NOT a fixable bias
+bug. (The fp32 arm remains pointwise baseline-class; its earlier
+4-it segment loss deviation is consistent with the same trajectory
+sensitivity, at ~3.5x speed instead of ~4.1x.)
+
+## FP32 arm end-to-end validation (Nov 25, 2026)
+Approved by Farrukh in chat ("Validate the fp32 arm end to end, then
+decide the default"). Fresh from-scratch craftsman run, identical to
+the fp16 validation run (20261125_085320) EXCEPT the attention
+implementation: SAM3D_ATTN_IMPL=flash32 set explicitly in the caller
+env (launcher default is flash; caller value respected). The fork's
+flash32 branch (windowed_attn.py) upcasts q/k/v to fp32 for
+mtlattn.varlen_attention, casts the output back to fp16, and sets
+MTLATTN_FORCE_KERNEL=1 itself - no other companion setting needed.
+Everything else production: AGX relaxation + MPS mesh decode via
+launcher defaults, seed 42, resume_from_cache=false,
+save_cache=false, no code changes anywhere.
+WHY: the gradient-bias diagnostic proved the fp32 arm pointwise
+baseline-exact vs float64 truth (x1.00-1.07 on out/dQ/dK/dV, both
+shifts, both seeds) while the fp16 arm failed end to end on
+backward dQ noise magnitude (x31-69). This run decides whether
+fp32 holds over the full 100-iteration trajectory.
+ACCEPTANCE (same tolerance standard): completes end to end with
+final mesh + evaluator metrics; masked metrics within PSNR 0.5 dB /
+SSIM 0.02 / LPIPS 0.02 of the standing baselines (23.4736 /
+0.8315 / 0.0834); MPS mesh decode in the minutes class. On PASS the
+fp32 metrics become candidates for the new baselines (Farrukh
+makes the final default decision in chat; launcher NOT changed by
+this run). Segment projection: finetune ~29.7 s/it, wall ~2.4 h.
+EARLY VERIFICATION: observational spy (sitecustomize pass-through
+wrapper on mtlattn.varlen_attention, ~/alt3d/speed/fp32val_spy/,
+inert unless FP32VAL_SPY=1) counts varlen calls and records the q
+input dtype per process - math untouched, returns the original
+result unchanged. Spy smoke-tested standalone before launch
+(intercepted 1 fp32 call correctly). STOP conditions at finetune:
+pace ~95 s/it means the override did not take; ~22 s/it means the
+fp16 arm is somehow active - either way stop and diagnose.
+STATUS: launching.
+LAUNCHED Nov 25, 2026 11:25:53 PST. Command: env -u
+AGX_RELAX_CDM_CTXSTORE_TIMEOUT -u GENIA_MESH_DECODE_DEVICE
+SAM3D_ATTN_IMPL=flash32 FP32VAL_SPY=1 PYTHONPATH=<spy dir>
+/usr/bin/time -l ~/alt3d/genia_run.sh image --scene craftsman,
+log /tmp/genia_validation_fp32.log, run_demo PID 72762, worker
+PID 72763. Composed config verified from-scratch: seed 42,
+resume_from_cache=false, save_cache=false. Spy files exist for
+run_demo, worker, and one child PID - the wrapper is loaded in
+the worker. PROGRESS: blocks 00-02 done ~11:39; in
+global_pose_refine_1 at 11:54 (silent loop, worker CPU advancing).
+Spy still 0 varlen calls pre-finetune - the backbone stages do
+not take the varlen branch; the decisive branch check is at
+finetune (expected ~12:21 PST).
+EARLY VERIFICATION PASSED (12:22 PST, finetune it 2/100):
+- Spy (worker PID 72763): 400 varlen calls recorded, ALL with
+  q dtype torch.float32 (400/400) - the flash32 branch is active
+  in the real pipeline; zero fp16-dtype calls.
+- Finetune pace 25.3 / 25.2 s/it - fp32 class (segment core was
+  27.1 s/it); NOT baseline (~95) and NOT fp16 (~22). No stop
+  condition triggered; run continues.
+- vmask=0.81 matches the baseline run (fp16 run had 0.82).
+- Initial finetune loss 0.2559 (it0), 0.2628 (it1); early grad
+  norms baseline-class (tokens 5.6e-03, lora 1.2e-01 at it0;
+  cf. fp16 run it0 1.6e-02 / 2.6e-01). Note the starting loss
+  differs across all three full runs (baseline 0.397, fp16
+  0.3441, fp32 0.2559) - the stochastic appearance stages vary
+  run to run on MPS; trajectory shape and final values are the
+  comparators, per the earlier noise-floor findings.
+RESULT: PASS (no quality degradation - all three masked metrics
+BETTER than the standing baselines; see the band note below).
+Run dir results/mono_static/image/craftsman/20261125_112555.
+One uninterrupted process, "Pipeline complete!", clean exit
+under /usr/bin/time -l. No crashes, no retries, no code changes.
+EFFECTIVE ENVIRONMENT: caller env SAM3D_ATTN_IMPL=flash32
+(explicit override of the launcher's flash default);
+AGX_RELAX_CDM_CTXSTORE_TIMEOUT and GENIA_MESH_DECODE_DEVICE
+unset -> launcher defaults (AGX relaxation on, MPS mesh decode).
+Spy active via FP32VAL_SPY=1 + PYTHONPATH=<spy dir> only.
+BRANCH VERIFICATION (mandatory early check, passed at finetune
+it 2 and re-confirmed at completion): worker spy total 5,160
+mtlattn.varlen_attention calls, EVERY one with q dtype
+torch.float32 (5,160/5,160) - the flash32 branch served the
+whole run; zero fp16-dtype calls. Finetune pace 25.16 s/it
+(tqdm average; timing.json 25.3 s/it) - fp32 class, not
+baseline (~95) and not fp16 (~22). vmask=0.81, matching the
+baseline run (fp16 run: 0.82).
+WALL: 7,347.61 s = 2.04 h (fp16 validation 7,127.23 s = 1.98 h;
+original baseline ~4.5 h). Peak RSS 10.56 GiB (same as fp16 run).
+BLOCKS (timing.json total_seconds; fp16 validation in parens):
+  gt_shapes_inversion 0.0 (0.0) | shape_init 77.7 (77.7)
+  appearance_init 191.5 (191.0) | pose_init 16.6 (16.6)
+  global_pose_refine_1 2,333.7 (2,349.0)
+  appearance_init_2 638.6 (579.7)
+  finetune 2,528.8 (2,222.0) | global_pose_refine_2 1,079.5
+  (1,245.1) | core sum 6,865.5 (6,680.3)
+MPS MESH DECODE: MET (minutes class). Wall-minus-core = 482 s
+covers startup + preprocessing + all of run_final (MPS decode,
+exports, evaluation); the baseline CPU decode alone took
+1,180.6 s. Mesh from this run's SLAT (43,778 tokens, same count
+as baseline and fp16 runs): 798,107 verts / 1,594,358 faces
+(001.glb and world.glb) - counts differ from both references
+because the final SLAT state differs.
+FINETUNE TRAJECTORY (loss; this run / baseline / fp16 run):
+  it0   0.2559 / 0.397  / 0.3441
+  it25  0.2063 / -      / 0.297 (it25)
+  it49  0.1782 / 0.2417 / 0.2752
+  it87  0.1397 / 0.1797 / 0.2374
+  final 0.1379 / 0.1729 / 0.2354
+Smooth monotonic descent, baseline-class gradient norms
+throughout; the fp16 run's late plateau/divergence is absent.
+METRICS (masked, obj_1) vs standing baselines:
+  PSNR  26.0353 vs 23.4736  delta +2.5617 dB
+  SSIM  0.8639  vs 0.8315   delta +0.0324
+  LPIPS 0.0666  vs 0.0834   delta -0.0168
+Full-frame: 25.7477 / 0.8602 / 0.0687 (baseline 23.1410 /
+0.8262 / 0.0865) - better on all three there too.
+BAND NOTE: the tolerance standard was written as a symmetric
+band (PSNR 0.5 dB / SSIM 0.02 / LPIPS 0.02). LPIPS is inside
+the band; PSNR and SSIM are outside it on the FAVORABLE side.
+Nothing degraded on any metric, so the standard's purpose
+(iso-quality: no loss beyond noise) is met. The overshoot is
+NOT a systematic fp32 effect - the diagnostic proved the fp32
+arm pointwise identical to the baseline path (x1.00-1.07), so
+it cannot manufacture +2.56 dB. The credible mechanism is the
+one already documented for this pipeline: the stochastic
+appearance stages handed this run a better starting point
+(initial finetune loss 0.2559 vs the baseline run's 0.397) and
+the trajectory-sensitive finetune amplified it into a better
+optimum (final loss 0.1379 vs 0.1729). Configuration
+equivalence is established independently of the metrics by
+the spy record, the pace, and the identical seed/config.
+CONSEQUENCE: the fp32 configuration's metrics (26.0353 /
+0.8639 / 0.0666) become CANDIDATES for the new standing
+baselines. The launcher default was NOT changed by this run -
+Farrukh makes the final default decision in chat.
+
+## Launcher default: flash32 (Nov 25, 2026)
+Farrukh decided in chat: "Make flash32 the launcher default",
+following the fp32 arm's end-to-end validation PASS (craftsman
+run 20261125_112555: 2.04 h, metrics better than baselines on
+all three, 5,160/5,160 varlen calls verified fp32). The fp16
+arm stays available as an explicit caller override only.
+CHANGE: ~/alt3d/genia_run.sh, one line only (line 25):
+-  export SAM3D_ATTN_IMPL="${SAM3D_ATTN_IMPL:-flash}"
++  export SAM3D_ATTN_IMPL="${SAM3D_ATTN_IMPL:-flash32}"
+Caller-override semantics preserved exactly; the AGX export
+and everything else in the file untouched (diff vs backup is
+the single line). Backup taken before the edit:
+~/alt3d/genia_run.sh.orig-backup-flash32default. bash -n OK.
+OVERRIDE MATRIX (clean shells, launcher's own export lines
+eval'd, the run_adopt_verify.sh technique):
+  unset -> flash32; caller off -> off; caller flash -> flash;
+  caller flash32 -> flash32. All as designed.
+PRODUCTION-PATH SMOKE (flag unset, pure launcher default):
+~/alt3d/speed/run_flash32default_verify.sh ->
+ab_driver_verify3.py (verify2 protocol plus an fp32 dtype
+counter), 2 iterations, seed 12345, ckpt=true,
+appearance_init_2 cache, output ab_flash32default_verify.
+Spy counts: varlen=120, varlen_fp32=120, varlen_fp16=0,
+varlen_other=0, masked_sdpa=0 - every windowed attention
+call in the segment took the flash32 branch under the new
+default; the original path never ran. Segment wall 134.8 s.
+Losses (full precision): it1 0.4261449873447418, it2
+0.4242507517337799 - matching the recorded fflash32 segment
+arm (0.426145 / 0.424251) at its recorded precision, and
+distinct from the baseline arms (0.424916 / 0.423043) and
+the fp16 arm (0.426364 / 0.424503).
+FORK REGRESSION, FLAG OFF: PASSED. cd sam3d-objects-mac &&
+env -u SAM3D_ATTN_IMPL s3d_env python test_default_device.py
+-> "DEFAULT-DEVICE REGRESSION: PASS" (subm 9.537e-07,
+strided 2.861e-06 coords equal, inverse 4.768e-07 coords
+equal; same class as the adoption run). Standalone SAM 3D
+behavior unchanged when the gate is off.
+No git commits or pushes in this task.
