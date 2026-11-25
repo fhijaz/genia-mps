@@ -22,6 +22,6 @@ export AGX_RELAX_CDM_CTXSTORE_TIMEOUT="${AGX_RELAX_CDM_CTXSTORE_TIMEOUT:-1}"
 # SAM3D_ATTN_IMPL. A value provided by the caller is respected: set
 # SAM3D_ATTN_IMPL=flash32 for the fp32 arm, or any other value (e.g.
 # off) to skip the gate and use the original masked_sdpa path.
-export SAM3D_ATTN_IMPL="${SAM3D_ATTN_IMPL:-flash}"
+export SAM3D_ATTN_IMPL="${SAM3D_ATTN_IMPL:-flash32}"
 export GENIA_SAM3D_WEIGHTS=/Users/fhijaz/alt3d/sam3d-objects-mac/checkpoints/hf/checkpoints
 exec /Users/fhijaz/alt3d/genia_env/bin/python /Users/fhijaz/alt3d/GenIA/demo/run_demo.py "$@"
